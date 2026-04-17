@@ -1,0 +1,26 @@
+# Secretos / entorno local
+/.env
+.env
+frontend/.env
+frontend/.env.local
+backend/.env
+auth0-vanillajs/.env
+auth0-vanillajs/.env.local
+
+# Java / Maven
+backend/target/
+*.class
+*.jar
+*.war
+*.iml
+.idea/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+auth0-vanillajs/node_modules/
+auth0-vanillajs/dist/
+
+# OS
+.DS_Store
+Thumbs.db
