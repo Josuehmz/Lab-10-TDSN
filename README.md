@@ -151,5 +151,6 @@ Pendiente operativo (fuera de código): crear/configurar bucket S3, política p�
 - Monolito Spring Boot funcional
 - SPA React integrada con Auth0
 - API protegida con JWT y scopes
+- Validación de `issuer` + `audience` (claim `aud`) en el Resource Server
 - Swagger disponible
 - Base para continuar con la fase de microservicios/serverless en AWS
