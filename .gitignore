@@ -9,6 +9,9 @@ auth0-vanillajs/.env.local
 
 # Java / Maven
 backend/target/
+microservices/**/target/
+microservices/.aws-sam/
+microservices/env-local.json
 *.class
 *.jar
 *.war

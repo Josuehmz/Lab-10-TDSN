@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Lab 10 TDSN — microservicios serverless (User, Posts, Stream) en Java 17
+
+Globals:
+  Function:
+    Runtime: java17
+    Timeout: 25
+    MemorySize: 1024
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        # Vacío en AWS; sam local la rellena desde env-local.json (SAM fusiona mejor si la clave ya existe en el template).
+        DYNAMODB_ENDPOINT: ''
+
+Parameters:
+  Auth0Domain:
+    Type: String
+    Description: Dominio Auth0 (ej. dev-xxx.us.auth0.com)
+  Auth0Audience:
+    Type: String
+    Description: Identifier (audience) de la API en Auth0
+
+Resources:
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowHeaders:
+          - Authorization
+          - Content-Type
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+
+  PostsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: postId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: postId
+          KeyType: HASH
+
+  UserServiceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: user-service/
+      Handler: com.lab10.ms.user.UserHandler::handleRequest
+      Environment:
+        Variables:
+          AUTH0_DOMAIN: !Ref Auth0Domain
+          AUTH0_AUDIENCE: !Ref Auth0Audience
+          USERS_TABLE: !Ref UsersTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+      Events:
+        Me:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /me
+
+  PostsServiceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: posts-service/
+      Handler: com.lab10.ms.posts.PostsHandler::handleRequest
+      Environment:
+        Variables:
+          AUTH0_DOMAIN: !Ref Auth0Domain
+          AUTH0_AUDIENCE: !Ref Auth0Audience
+          USERS_TABLE: !Ref UsersTable
+          POSTS_TABLE: !Ref PostsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PostsTable
+      Events:
+        PostPosts:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: POST
+            Path: /posts
+
+  StreamServiceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: stream-service/
+      Handler: com.lab10.ms.stream.StreamHandler::handleRequest
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UsersTable
+          POSTS_TABLE: !Ref PostsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref UsersTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref PostsTable
+      Events:
+        GetPosts:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /posts
+        GetStream:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Method: GET
+            Path: /stream
+
+Outputs:
+  HttpApiUrl:
+    Description: URL base del HTTP API (añade /posts, /me, etc.)
+    Value: !GetAtt HttpApi.ApiEndpoint
+  UsersTableName:
+    Value: !Ref UsersTable
+  PostsTableName:
+    Value: !Ref PostsTable

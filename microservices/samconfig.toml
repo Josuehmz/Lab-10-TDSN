@@ -1,0 +1,7 @@
+version = 0.1
+
+# API local: template generado por `sam build`, red Docker compartida con DynamoDB Local, variables locales.
+[default.local_start_api.parameters]
+template_file = ".aws-sam/build/template.yaml"
+docker_network = "tdsn-local"
+env_vars = "env-local.json"

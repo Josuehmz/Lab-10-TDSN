@@ -1,0 +1,20 @@
+{
+  "UserServiceFunction": {
+    "DYNAMODB_ENDPOINT": "http://ddb:8000",
+    "USERS_TABLE": "tdsn-local-users",
+    "AUTH0_DOMAIN": "TU-DOMINIO.us.auth0.com",
+    "AUTH0_AUDIENCE": "https://lab10-tdsn-api"
+  },
+  "PostsServiceFunction": {
+    "DYNAMODB_ENDPOINT": "http://ddb:8000",
+    "USERS_TABLE": "tdsn-local-users",
+    "POSTS_TABLE": "tdsn-local-posts",
+    "AUTH0_DOMAIN": "TU-DOMINIO.us.auth0.com",
+    "AUTH0_AUDIENCE": "https://lab10-tdsn-api"
+  },
+  "StreamServiceFunction": {
+    "DYNAMODB_ENDPOINT": "http://ddb:8000",
+    "USERS_TABLE": "tdsn-local-users",
+    "POSTS_TABLE": "tdsn-local-posts"
+  }
+}

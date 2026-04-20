@@ -1,4 +1,10 @@
-const base = () => import.meta.env.VITE_API_BASE_URL || '';
+const monolithBase = () => (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+
+/**
+ * Base del HTTP API desplegado con SAM (un solo API Gateway para User + Posts + Stream).
+ * Si está vacío, se usa el monolito (`VITE_API_BASE_URL`) con prefijo `/api`.
+ */
+const msBase = () => (import.meta.env.VITE_MICROSERVICES_BASE_URL || '').replace(/\/$/, '');
 
 async function parseError(res) {
   const text = await res.text();
@@ -11,7 +17,9 @@ async function parseError(res) {
 }
 
 export async function getPosts() {
-  const res = await fetch(`${base()}/api/posts`);
+  const ms = msBase();
+  const url = ms ? `${ms}/posts` : `${monolithBase()}/api/posts`;
+  const res = await fetch(url);
   if (!res.ok) {
     throw new Error(await parseError(res));
   }
@@ -19,7 +27,9 @@ export async function getPosts() {
 }
 
 export async function createPost(accessToken, content) {
-  const res = await fetch(`${base()}/api/posts`, {
+  const ms = msBase();
+  const url = ms ? `${ms}/posts` : `${monolithBase()}/api/posts`;
+  const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -34,7 +44,9 @@ export async function createPost(accessToken, content) {
 }
 
 export async function getMe(accessToken) {
-  const res = await fetch(`${base()}/api/me`, {
+  const ms = msBase();
+  const url = ms ? `${ms}/me` : `${monolithBase()}/api/me`;
+  const res = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
   if (!res.ok) {

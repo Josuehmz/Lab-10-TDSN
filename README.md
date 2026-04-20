@@ -1,98 +1,253 @@
-# Lab 10 TDSN - Twitter-like seguro con Auth0
+# Lab 10 TDSN — Twitter-like con Auth0 (monolito + microservicios serverless)
 
-Aplicación tipo Twitter (stream público de posts cortos) construida **hasta este punto** como:
+**Autores:** Stiven Esneider Pardo Gutiérrez, Allan steef Contreras Rodriguez, Josué David Hernandez Martinez.
 
-- **Backend monolítico** en Spring Boot
-- **Frontend SPA** en React + Vite
-- **Autenticación/autorización** con Auth0 usando JWT
+Aplicación tipo Twitter: stream público de posts (máx. 140 caracteres), login con Auth0 y API protegida con JWT y scopes. El repositorio conserva el **monolito Spring Boot** como referencia y añade una **refactorización a microservicios** desplegables como **AWS Lambda** (serverless) detrás de un **HTTP API** (API Gateway v2) definido con **AWS SAM**.
 
-El objetivo académico es evolucionar luego a microservicios/serverless en AWS, pero este repositorio actualmente cubre la fase monolítica funcional y segura.
+---
 
-## Funcionalidades implementadas
+## Verificación de la migración monolito → microservicios
 
-- Login / logout en frontend con Auth0
-- Crear posts de hasta 140 caracteres (endpoint protegido)
-- Ver stream público global (endpoint público)
-- Consultar perfil del usuario autenticado (`/api/me`, protegido)
-- Documentación OpenAPI/Swagger disponible en backend
+| Criterio | Estado | Notas |
+|----------|--------|--------|
+| Al menos 3 microservicios independientes | Cumplido | **User Service** (`UserHandler`), **Posts Service** (`PostsHandler`), **Stream / Feed Service** (`StreamHandler`) en `microservices/`. |
+| Cada uno como AWS Lambda | Cumplido | Handlers Java 17 (`RequestHandler<APIGatewayV2HTTPEvent, …>`), empaquetado con Maven Shade (`*-aws.jar`). Plantilla `microservices/template.yaml` (SAM). |
+| Separación de responsabilidades | Cumplido | Usuario (`/me` + persistencia perfil), creación de posts (`POST /posts`), lectura del feed (`GET /posts`, `GET /stream`). |
+| Auth0 / JWT | Cumplido | Monolito: Spring OAuth2 Resource Server. Lambdas: validación manual con JWKS (`common-auth` + Auth0). Mismos scopes: `write:posts`, `read:profile`. |
+| Persistencia | Cambio intencional | Monolito: **H2** + JPA. Microservicios: **DynamoDB** (tablas `UsersTable`, `PostsTable`). No hay migración automática de datos H2 → DynamoDB: es un cambio de arquitectura de persistencia típico al pasar a serverless. |
+| Frontend | Compatible | `frontend/src/api.js` usa el monolito por defecto (`VITE_API_BASE_URL` + rutas `/api/...`). Si defines `VITE_MICROSERVICES_BASE_URL`, apunta al HTTP API de SAM (rutas `/posts`, `/me` sin `/api`). |
 
-## Estructura del proyecto
+**Conclusión:** la separación lógica y de despliegue es coherente con el enunciado. El monolito **no se eliminó**: sirve para desarrollo local y comparación. Los Lambdas son la implementación “microservicio” desacoplada; el build SAM requiere instalar antes el módulo compartido en el repositorio Maven local (ver más abajo).
 
-- `backend/`: API REST Spring Boot (monolito)
-- `frontend/`: SPA React que consume la API
-- `.gitignore`: ignora secretos y artefactos de build
+---
 
-## Backend (Spring Boot)
+## Comparación: monolito vs microservicios
 
-### Stack
+| Aspecto | Monolito (`backend/`) | Microservicios (`microservices/`) |
+|---------|------------------------|-----------------------------------|
+| Despliegue | Un solo JAR / proceso Spring Boot | Tres funciones Lambda + API Gateway HTTP API |
+| Rutas HTTP | Prefijo `/api` (`/api/posts`, `/api/me`) | Raíz del API (`/posts`, `/stream`, `/me`) |
+| Autenticación JWT | Filtros Spring Security + `Jwt` | `Auth0JwtVerifier` (JWKS, issuer, audience, scopes) |
+| Datos | JPA + H2 | AWS SDK v2 + DynamoDB |
+| Documentación API | Swagger / OpenAPI en el monolito | OpenAPI opcional en API Gateway (no generado aquí) |
+| Escalado | Vertical / réplicas del monolito | Escalado por invocación (serverless) |
 
-- Java 17
-- Spring Boot 3.3.x
-- Spring Web, Validation, Data JPA
-- Spring Security OAuth2 Resource Server
-- H2 (memoria, para desarrollo)
-- Springdoc OpenAPI (Swagger UI)
+---
 
-### Entidades principales
+## Código: qué se “movió” del monolito a los Lambdas (extractos)
 
-- `AppUser`: usuario sincronizado desde claims del JWT (`sub`, `email`, `name`, `picture`)
-- `Post`: contenido del post (máx. 140), autor y fecha
+### 1) Posts + stream en el monolito → dos Lambdas
 
-### Endpoints
+**Antes — controlador único** (`PostController`: lectura y escritura en la misma app):
 
-- `GET /api/posts` -> Público, devuelve stream global
-- `GET /api/stream` -> Público, alias del stream global
-- `POST /api/posts` -> Protegido, requiere JWT con scope `write:posts`
-- `GET /api/me` -> Protegido, requiere JWT con scope `read:profile`
+```33:54:backend/src/main/java/com/lab10/tdsn/web/PostController.java
+    @GetMapping("/stream")
+    @Operation(summary = "Stream global (público)", description = "Devuelve todos los posts ordenados del más reciente al más antiguo. No requiere autenticación.")
+    public List<PostResponse> stream() {
+        return postService.getPublicStream();
+    }
 
-### Documentación API
+    @GetMapping("/posts")
+    @Operation(summary = "Listar posts (público)", description = "Alias del stream global. No requiere autenticación.")
+    public List<PostResponse> posts() {
+        return postService.getPublicStream();
+    }
 
-- Swagger UI: `http://localhost:8080/swagger-ui.html`
+    @PostMapping("/posts")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Crear post", description = "Requiere JWT con scope `write:posts` y audience de la API.")
+    @SecurityRequirement(name = "bearer-jwt")
+    public PostResponse create(
+            @AuthenticationPrincipal Jwt jwt,
+            @Valid @RequestBody CreatePostRequest body
+    ) {
+        return postService.createPost(jwt, body);
+    }
+```
 
-## Seguridad con Auth0
+**Después — solo creación en Posts Service** (`PostsHandler`: POST, JWT + scope, escritura DynamoDB):
 
-### Flujo actual
+```33:84:microservices/posts-service/src/main/java/com/lab10/ms/posts/PostsHandler.java
+    @Override
+    public APIGatewayV2HTTPResponse handleRequest(APIGatewayV2HTTPEvent event, Context context) {
+        try {
+            String method = event.getRequestContext().getHttp().getMethod();
+            if ("OPTIONS".equalsIgnoreCase(method)) {
+                return APIGatewayV2HTTPResponse.builder()
+                        .withStatusCode(204)
+                        .withHeaders(LambdaHttp.corsHeaders())
+                        .build();
+            }
 
-- El frontend solicita access token a Auth0.
-- El backend valida el JWT como Resource Server.
-- Se verifica issuer (`AUTH0_DOMAIN`) y audience (`AUTH0_AUDIENCE`).
-- Las rutas protegidas usan scopes (`SCOPE_write:posts`, `SCOPE_read:profile`).
+            if (!"POST".equalsIgnoreCase(method)) {
+                return LambdaHttp.text(405, "{\"error\":\"Método no permitido\"}");
+            }
 
-### Configuración recomendada en Auth0
+            Auth0JwtVerifier verifier = verifier();
+            String auth = header(event, "authorization");
+            DecodedJWT jwt = verifier.verifyBearer(auth);
+            if (!Auth0JwtVerifier.hasScope(jwt, "write:posts")) {
+                return LambdaHttp.text(403, "{\"error\":\"Scope write:posts requerido\"}");
+            }
 
-1. Crear una **API** con Identifier = valor de `AUTH0_AUDIENCE`.
-2. Definir scopes:
-   - `read:posts`
-   - `write:posts`
-   - `read:profile`
-3. Crear una **Single Page Application** (SPA).
-4. Configurar Allowed Callback URLs, Logout URLs y Web Origins.
+            String sub = jwt.getSubject();
+            String email = Auth0JwtVerifier.claimString(jwt, "email");
+            String name = Auth0JwtVerifier.firstNonBlank(
+                    Auth0JwtVerifier.claimString(jwt, "name"),
+                    Auth0JwtVerifier.claimString(jwt, "nickname"),
+                    email
+            );
+            String picture = Auth0JwtVerifier.claimString(jwt, "picture");
 
-## Variables de entorno
+            String usersTable = requiredEnv("USERS_TABLE");
+            String postsTable = requiredEnv("POSTS_TABLE");
+            putUser(usersTable, sub, email, name, picture);
 
-> Importante: `.env` está ignorado por git para no subir secretos.
+            JsonNode root = JSON.readTree(event.getBody() == null ? "{}" : event.getBody());
+            String content = root.path("content").asText("").trim();
+            if (content.isEmpty() || content.length() > 140) {
+                return LambdaHttp.text(400, "{\"error\":\"content: 1-140 caracteres\"}");
+            }
 
-### Backend (`backend/.env`)
+            long createdAt = System.currentTimeMillis();
+            String postId = UUID.randomUUID().toString();
+            putPost(postsTable, postId, sub, content, createdAt);
 
-- `AUTH0_DOMAIN`
-- `AUTH0_AUDIENCE`
-- `AUTH0_CLIENT_ID` (referencia de configuración)
-- `CORS_ALLOWED_ORIGINS`
+            Map<String, Object> response = new HashMap<>();
+            response.put("id", postId);
+            response.put("content", content);
+            response.put("authorId", sub);
+            response.put("createdAt", Instant.ofEpochMilli(createdAt).toString());
+            response.put("authorName", name != null ? name : sub);
+            return LambdaHttp.json(201, response);
+```
 
-Existe plantilla: `backend/.env.example`.
+**Después — lectura del feed en Stream Service** (`StreamHandler`: GET público, agrega `authorName` como hacía `PostService` con repositorios):
 
-### Frontend (`frontend/.env`)
+```35:49:backend/src/main/java/com/lab10/tdsn/service/PostService.java
+    @Transactional(readOnly = true)
+    public List<PostResponse> getPublicStream() {
+        List<Post> posts = postRepository.findAllByOrderByCreatedAtDesc();
+        Set<String> authorIds = posts.stream().map(Post::getAuthorId).collect(Collectors.toSet());
+        Map<String, String> names = appUserRepository.findAllById(authorIds).stream()
+                .collect(Collectors.toMap(AppUser::getId, u -> u.getName() != null ? u.getName() : u.getId()));
+        return posts.stream()
+                .map(p -> new PostResponse(
+                        p.getId(),
+                        p.getContent(),
+                        p.getAuthorId(),
+                        p.getCreatedAt(),
+                        names.getOrDefault(p.getAuthorId(), null)
+                ))
+                .toList();
+    }
+```
 
-- `VITE_AUTH0_DOMAIN`
-- `VITE_AUTH0_CLIENT_ID`
-- `VITE_AUTH0_AUDIENCE`
-- `VITE_API_BASE_URL`
+```56:86:microservices/stream-service/src/main/java/com/lab10/ms/stream/StreamHandler.java
+            String postsTable = requiredEnv("POSTS_TABLE");
+            String usersTable = requiredEnv("USERS_TABLE");
 
-Existe plantilla: `frontend/.env.example`.
+            List<Map<String, AttributeValue>> rows = scanAllPosts(postsTable);
+            rows.sort(Comparator.comparingLong(StreamHandler::createdAtMillis).reversed());
 
-## Cómo ejecutar en local
+            Set<String> authorIds = new HashSet<>();
+            for (Map<String, AttributeValue> row : rows) {
+                AttributeValue aid = row.get("authorId");
+                if (aid != null && aid.s() != null) {
+                    authorIds.add(aid.s());
+                }
+            }
+            Map<String, String> names = batchLoadNames(usersTable, authorIds);
 
-## 1) Backend
+            List<Map<String, Object>> out = new ArrayList<>();
+            for (Map<String, AttributeValue> row : rows) {
+                String postId = attrS(row, "postId");
+                String content = attrS(row, "content");
+                String authorId = attrS(row, "authorId");
+                long ts = createdAtMillis(row);
+                Map<String, Object> dto = new HashMap<>();
+                dto.put("id", postId);
+                dto.put("content", content);
+                dto.put("authorId", authorId);
+                dto.put("createdAt", Instant.ofEpochMilli(ts).toString());
+                dto.put("authorName", names.get(authorId));
+                out.add(dto);
+            }
+
+            return LambdaHttp.json(200, out);
+```
+
+### 2) Perfil `/api/me` en el monolito → User Service
+
+**Antes:**
+
+```26:36:backend/src/main/java/com/lab10/tdsn/web/MeController.java
+    @GetMapping("/me")
+    @Operation(summary = "Usuario actual", description = "Requiere JWT con scope `read:profile`.")
+    @SecurityRequirement(name = "bearer-jwt")
+    public UserProfileResponse me(@AuthenticationPrincipal Jwt jwt) {
+        AppUser user = userSyncService.upsertFromJwt(jwt);
+        return new UserProfileResponse(
+                user.getId(),
+                user.getEmail(),
+                user.getName(),
+                user.getPictureUrl()
+        );
+    }
+```
+
+**Después** (`UserHandler`: mismo contrato JSON `sub`, `email`, `name`, `picture`; persiste en DynamoDB):
+
+```42:71:microservices/user-service/src/main/java/com/lab10/ms/user/UserHandler.java
+            String path = event.getRawPath() == null ? "" : event.getRawPath();
+            if (!path.endsWith("/me")) {
+                return LambdaHttp.text(404, "{\"error\":\"No encontrado\"}");
+            }
+
+            Auth0JwtVerifier verifier = verifier();
+            String auth = header(event, "authorization");
+            DecodedJWT jwt = verifier.verifyBearer(auth);
+            if (!Auth0JwtVerifier.hasScope(jwt, "read:profile")) {
+                return LambdaHttp.text(403, "{\"error\":\"Scope read:profile requerido\"}");
+            }
+
+            String sub = jwt.getSubject();
+            String email = Auth0JwtVerifier.claimString(jwt, "email");
+            String name = Auth0JwtVerifier.firstNonBlank(
+                    Auth0JwtVerifier.claimString(jwt, "name"),
+                    Auth0JwtVerifier.claimString(jwt, "nickname"),
+                    email
+            );
+            String picture = Auth0JwtVerifier.claimString(jwt, "picture");
+
+            String table = requiredEnv("USERS_TABLE");
+            putUser(table, sub, email, name, picture);
+
+            Map<String, Object> body = new HashMap<>();
+            body.put("sub", sub);
+            body.put("email", email);
+            body.put("name", name);
+            body.put("picture", picture);
+            return LambdaHttp.json(200, body);
+```
+
+### 3) Frontend: misma app, dos modos de URL
+
+Si `VITE_MICROSERVICES_BASE_URL` está vacío, se usa el monolito (`/api/posts`, `/api/me`). Si está definida, las mismas funciones apuntan al API Gateway (`/posts`, `/me`). Ver `frontend/src/api.js`.
+
+---
+
+## Estructura del repositorio
+
+| Ruta | Rol |
+|------|-----|
+| `backend/` | Monolito Spring Boot (referencia + desarrollo local) |
+| `frontend/` | SPA React + Auth0 |
+| `microservices/` | Parent Maven + `common-auth` + Lambdas + `template.yaml` (SAM) |
+
+---
+
+## Monolito — ejecutar en local
 
 Desde `backend/`:
 
@@ -100,57 +255,105 @@ Desde `backend/`:
 mvn spring-boot:run
 ```
 
-API en:
+- API: `http://localhost:8080`
+- Swagger: `http://localhost:8080/swagger-ui.html`
 
-- `http://localhost:8080`
+Variables: `backend/.env.example`.
 
-Swagger en:
+---
 
-- `http://localhost:8080/swagger-ui.html`
+## Microservicios — compilar y desplegar (SAM + Lambda)
 
-## 2) Frontend
+### 1) Compilar todos los JAR (incluye `common-auth`)
 
-Desde `frontend/`:
+Desde `microservices/`:
 
 ```bash
+mvn clean install -DskipTests
+```
+
+Esto publica `common-auth` en el repositorio Maven local; **es necesario** antes de `sam build` para que cada `CodeUri` (user/posts/stream) resuelva la dependencia.
+
+### 2) SAM build
+
+```bash
+cd microservices
+sam build --parameter-overrides Auth0Domain=TU_DOMINIO Auth0Audience=TU_AUDIENCE
+```
+
+### 3) API local (`sam local start-api`) con DynamoDB Local
+
+Las Lambdas usan DynamoDB. En local conviene **DynamoDB Local** en Docker y la misma **red Docker** que SAM (`tdsn-local`), con el endpoint `http://ddb:8000` en `env-local.json`.
+
+**Pasos (PowerShell)**
+
+1. Red y DynamoDB Local en segundo plano (nombre **`ddb`**, red **`tdsn-local`**):
+
+```powershell
+docker network create tdsn-local 2>$null
+docker rm -f ddb 2>$null
+docker run -d --network tdsn-local --name ddb -p 8000:8000 amazon/dynamodb-local
+```
+
+2. Crear tablas (sin AWS CLI instalado en el host; usa la imagen oficial):
+
+```powershell
+docker run --rm --network tdsn-local -e AWS_ACCESS_KEY_ID=local -e AWS_SECRET_ACCESS_KEY=local amazon/aws-cli dynamodb create-table --endpoint-url http://ddb:8000 --region us-east-1 --table-name tdsn-local-users --attribute-definitions AttributeName=userId,AttributeType=S --key-schema AttributeName=userId,KeyType=HASH --billing-mode PAY_PER_REQUEST
+
+docker run --rm --network tdsn-local -e AWS_ACCESS_KEY_ID=local -e AWS_SECRET_ACCESS_KEY=local amazon/aws-cli dynamodb create-table --endpoint-url http://ddb:8000 --region us-east-1 --table-name tdsn-local-posts --attribute-definitions AttributeName=postId,AttributeType=S --key-schema AttributeName=postId,KeyType=HASH --billing-mode PAY_PER_REQUEST
+```
+
+3. Copia `microservices/env-local.example.json` a `env-local.json` y ajusta Auth0 y tablas si aplica (por defecto apunta a `http://ddb:8000` y a `tdsn-local-users` / `tdsn-local-posts`).
+
+4. Build y arranque del API (tras cambiar código Java, vuelve a ejecutar `sam build`):
+
+```powershell
+cd microservices
+mvn clean install -DskipTests
+sam build --parameter-overrides Auth0Domain=TU_DOMINIO Auth0Audience=TU_AUDIENCE
+sam local start-api
+```
+
+`microservices/samconfig.toml` fija el template construido (`.aws-sam/build/template.yaml`), la red `tdsn-local` y `env-local.json`. Equivalente sin archivo de configuración:
+
+`sam local start-api --template-file .aws-sam/build/template.yaml --docker-network tdsn-local --env-vars env-local.json`
+
+### 4) Desplegar en AWS
+
+```bash
+cd microservices
+sam deploy --guided
+```
+
+El template crea: HTTP API, tablas DynamoDB, tres Lambdas y permisos IAM. La salida `HttpApiUrl` es la base para el frontend (`VITE_MICROSERVICES_BASE_URL`).
+
+Parámetros del template: `Auth0Domain`, `Auth0Audience` (mismos criterios que en el monolito).
+
+---
+
+## Frontend
+
+```bash
+cd frontend
 npm install
 npm run dev
 ```
 
-Frontend en:
+Variables: `frontend/.env.example` (`VITE_MICROSERVICES_BASE_URL` opcional).
 
-- `http://localhost:5173`
+---
 
-## Pruebas
-
-En `backend/`:
+## Pruebas (monolito)
 
 ```bash
+cd backend
 mvn test
 ```
 
-Actualmente hay pruebas de integración para:
+---
 
-- Endpoints públicos sin token
-- Endpoints protegidos con/sin scopes correctos
+## Notas de diseño
 
-## Despliegue esperado del frontend en S3 (estado de avance)
-
-La app ya está preparada para build estático con Vite:
-
-```bash
-npm run build
-```
-
-Esto genera `frontend/dist/`, carpeta que se puede publicar en S3 Static Website Hosting.
-
-Pendiente operativo (fuera de código): crear/configurar bucket S3, política pública, y ajustar URLs finales en Auth0 + CORS backend.
-
-## Estado del proyecto (hasta este punto)
-
-- Monolito Spring Boot funcional
-- SPA React integrada con Auth0
-- API protegida con JWT y scopes
-- Validación de `issuer` + `audience` (claim `aud`) en el Resource Server
-- Swagger disponible
-- Base para continuar con la fase de microservicios/serverless en AWS
+- **Stream Service** usa `Scan` sobre posts para el laboratorio; en producción convendría un modelo de datos con orden explícito (p. ej. GSI por tiempo).
+- **User Service** y **Posts Service** escriben en la tabla de usuarios para mantener `authorName` en el feed sin acoplar Lambdas entre sí por HTTP.
+- CORS: cabeceras básicas en respuestas Lambda; además el HTTP API en SAM define CORS.
