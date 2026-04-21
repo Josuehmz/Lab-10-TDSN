@@ -32,6 +32,32 @@ Aplicación tipo Twitter: stream público de posts (máx. 140 caracteres), login
 | Documentación API | Swagger / OpenAPI en el monolito | OpenAPI opcional en API Gateway (no generado aquí) |
 | Escalado | Vertical / réplicas del monolito | Escalado por invocación (serverless) |
 
+### Capturas de prueba (`img/`)
+
+Evidencias del **frontend** (`npm run dev`, típicamente `http://localhost:5173`) contra el **monolito** (variables por defecto: `VITE_API_BASE_URL`, sin `VITE_MICROSERVICES_BASE_URL`) y contra **microservicios** (`VITE_MICROSERVICES_BASE_URL` apuntando a `sam local` o al `HttpApiUrl` desplegado).
+
+#### Monolito (Spring Boot, rutas `/api/...`)
+
+
+![Monolito — Auth0](img/mono1.png)
+
+![Monolito — perfil y stream vacío](img/mono2.png)
+
+![Monolito — stream con posts](img/mono3.png)
+
+![Monolito — error intermitente en perfil](img/mono4.png)
+
+#### Microservicios (Lambda + HTTP API)
+
+| Archivo | Qué muestra |
+|---------|-------------|
+| `micro1.png` | Sin iniciar sesión; **Stream público** en estado **“Cargando posts…”** mientras el frontend llama al API de SAM / desplegado. |
+| `micro2.png` | Sesión iniciada; **stream** con posts visibles; la tarjeta de perfil puede mostrar **Failed to fetch** si `GET /me` falla aunque `GET /posts` responda (típico al depurar red DynamoDB o reinicios de `sam local`). |
+
+![Microservicios — stream cargando (sin sesión)](img/micro1.png)
+
+![Microservicios — stream con posts y posible fallo en perfil](img/micro2.png)
+
 ---
 
 ## Código: qué se “movió” del monolito a los Lambdas (extractos)
@@ -244,6 +270,7 @@ Si `VITE_MICROSERVICES_BASE_URL` está vacío, se usa el monolito (`/api/posts`,
 | `backend/` | Monolito Spring Boot (referencia + desarrollo local) |
 | `frontend/` | SPA React + Auth0 |
 | `microservices/` | Parent Maven + `common-auth` + Lambdas + `template.yaml` (SAM) |
+| `img/` | Capturas de prueba del monolito y microservicios (ver sección anterior) |
 
 ---
 
