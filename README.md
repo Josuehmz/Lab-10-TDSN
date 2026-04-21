@@ -39,8 +39,6 @@ Evidencias del **frontend** (`npm run dev`, típicamente `http://localhost:5173`
 #### Monolito (Spring Boot, rutas `/api/...`)
 
 
-![Monolito — Auth0](img/mono1.png)
-
 ![Monolito — perfil y stream vacío](img/mono2.png)
 
 ![Monolito — stream con posts](img/mono3.png)
