@@ -377,7 +377,7 @@ mvn test
 
 ---
 
-## Notas de diseño
+## Notas de diseño ..
 
 - **Stream Service** usa `Scan` sobre posts para el laboratorio; en producción convendría un modelo de datos con orden explícito (p. ej. GSI por tiempo).
 - **User Service** y **Posts Service** escriben en la tabla de usuarios para mantener `authorName` en el feed sin acoplar Lambdas entre sí por HTTP.
