@@ -382,3 +382,6 @@ mvn test
 - **Stream Service** usa `Scan` sobre posts para el laboratorio; en producción convendría un modelo de datos con orden explícito (p. ej. GSI por tiempo).
 - **User Service** y **Posts Service** escriben en la tabla de usuarios para mantener `authorName` en el feed sin acoplar Lambdas entre sí por HTTP.
 - CORS: cabeceras básicas en respuestas Lambda; además el HTTP API en SAM define CORS.
+
+
+## Video evidencia del funcionamiento de la aplicacion desplegada 
