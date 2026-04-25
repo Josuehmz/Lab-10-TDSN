@@ -385,3 +385,8 @@ mvn test
 
 
 ## Video evidencia del funcionamiento de la aplicacion desplegada 
+
+Dentro del repositorio esta la evidencia como "Despliegue de la aplicacion.mp4", en este se evidencia la creacion de la funcion en aws, ademas de el despliegue en netlify, 
+esto debido a que segun los permisos de aws, el fronted debio ser desplegado en dicha plataforma, se evidencia tambien el inicio de sesion con google funcionando correctamente
+y como las publicaciones se muestran y actualizan correctamente al momento de ser hechas, ademas de esto, se realizo la implementacion usando auth0 para que todo funcionara 
+correctamente.
